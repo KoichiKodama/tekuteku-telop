@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang='ja' data-bs-theme="dark">
+<head>
+	<meta charset='UTF-8'>
+	<title>ヒアリングテスト代替 2024-02-18</title>
+	<link href='./tools/bootstrap-5.3.0/css/bootstrap.min.css' rel='stylesheet'>
+	<meta name='viewport' content='width=device-width,initial-scale=1,shrink-to-fit=no'>
+</head>
+<body>
+<div class="container-fluid">
+	<div class="row justify-content-center">
+	<div class="col-10 mt-5" id="div-video">
+		<video id="video" style="display:none"><source src="./blank-15min.mp4" type="video/mp4" /></video>
+		<div class="input-group m-1 mb-auto">
+		<textarea id="text-subtitle" class="cue-text form-control text-center fs-2 bg-dark text-white" rows="10" style="resize:none; overflow:hidden;" readonly></textarea>
+		</div>
+	</div>
+	</div>
+	<div class="row justify-content-center">
+	<div class="col-auto">
+		<div class="input-group m-1">
+		</div>
+	</div>
+	</div>
+	<div class="row justify-content-center align-items-center" id="div-control">
+	<div class="col-auto">
+		<div class="input-group m-2">
+			<button class="btn btn-secondary btn-lg" id="input-vtt">原稿読込</button>
+			<input type="file" class="form-control" id="input-vtt-file" style="display:none;" />
+			<input type="text" class="form-control" id="vtt-name" readonly placeholder="左のボタンを押す"/>
+		</div>
+	</div>
+	<div class="col-auto">
+		<div class="input-group m-2">
+			<button class="btn btn-secondary" id="play-stop"><img src="./icons/play-white.svg" width="24" height="24"/></button>
+			<input type="text" class="form-control text-center" id="video-time" disabled/>
+		</div>
+	</div>
+	</div>
+</div>
+
+<script src='./tools/jquery-3.6.0/jquery-3.6.0.min.js'></script>
+<script src='./tools/bootstrap-5.3.0/js/bootstrap.bundle.min.js'></script>
+<script src='./tools/sprintf-1.1.2/sprintf.min.js'></script>
+<script type="text/javascript"> 
+'use strict';
+
+var time_each_char = 0.1;
+var time_blank = 1;
+var time_min = 5;
+
+class myque {
+	i;
+	startTime;
+	endTime;
+	text;
+	constructor(i,start,end,text) {
+		this.i = i;
+		this.startTime = start;
+		this.endTime = end;
+		this.text = text;
+	}
+};
+var vtt_name;
+var vtt_lst = [];
+var vtt_src = null;
+var vtt_height = 0;
+
+function t2s(t) {
+	if ( t === NaN ) return "--:--:--";
+	var xx = (t*1000)%1000; t = Math.floor(t);
+	var ss = t%60; t = Math.floor(t/60);
+	var mm = t%60; t = Math.floor(t/60);
+	var hh = t;
+	return sprintf("%02d:%02d:%02d.%03d",hh,mm,ss,xx);
+}
+
+function s2t(s) {
+	if ( /^[0-9]{2}:[0-9]{2}:[0-9]{2}.[0-9]{3}$/.test(s) == false ) { console.log('invalid time string ... '+s); }
+	return parseFloat(s.substr(0,2))*3600+parseFloat(s.substr(3,2))*60+parseFloat(s.substr(6,2))+0.001*parseFloat(s.substr(9,3));
+}
+
+$(document).ready( function(){
+	$('#input-vtt').on('click',function(){ $('#input-vtt-file').click(); });
+	$('#input-vtt-file').on('change',function(){
+		if ( this.files.length == 1 ) {
+			var blob = this.files[0];
+			var reader = new FileReader();
+			reader.readAsText(blob);
+			reader.onload = function(){
+				// BOM 削除と改行コード統一
+				var result = reader.result.replace(/^\ufeff/,"").replace(/\r\n/g,'\n');
+				if ( /^WEBVTT/.test(result) == true ) {
+					vtt_lst = [];
+					result.split(/\n\n/).forEach((c)=>{
+						var a = /([0-9]{2}:[0-9]{2}:[0-9]{2}.[0-9]{3})[ ]+-->[ ]+([0-9]{2}:[0-9]{2}:[0-9]{2}.[0-9]{3}).*\n([^]+)$/.exec(c);
+						if ( a !== null && a[3] != "" ) { vtt_lst.push(new myque(s2t(a[1]),s2t(a[2]),a[3])); }
+					});
+				}
+				else {
+					let t = time_blank; // ストップした場合に最初の字幕を表示しないため
+					vtt_lst = [];
+					result.split(/\n\n/).forEach((c)=>{
+						if ( c.length == 0 ) return;
+						let dt = Math.max(time_each_char*c.length,time_min);
+						vtt_lst.push(new myque(vtt_lst.length,t,t+dt,c));
+						t += (dt+time_blank);
+					});
+				}
+				vtt_name = blob.name;
+				$('#vtt-name').val(vtt_name);
+				$('#input-vtt-file').val('');
+				seek(0);
+			};
+		}
+	});
+
+	$('#play-stop').on('click',function(){ if ( is_paused() ) { play(); } else { seek(0); } });
+	$('#load-video').on('click',load);
+	function on_load(){
+		$('#video-id').val(video_id());
+		$('#video-time').val(sprintf("%s/%s",t2s(current_time()).substr(0,8),t2s(duration()).substr(0,8)));
+	}
+	function on_play(){ $('#play-stop').html('<img src="./icons/stop-white.svg" width="24" height="24" />'); };
+	function on_pause(){ $('#play-stop').html('<img src="./icons/play-white.svg" width="24" height="24" />'); $('#text-subtitle').val(''); };
+	function on_timechange(){
+		$('#video-time').val(sprintf("%s/%s",t2s(current_time()).substr(0,8),t2s(duration()).substr(0,8)));
+		$('#video-seek').val(current_time());
+	}
+	setup_player({ id:'video', on_load:on_load, on_play:on_play, on_pause:on_pause, on_timechange:on_timechange });
+});
+
+var video;
+var video_name = 'none';
+var m_current_vtt = 0;
+
+function video_id() { return video_name; }
+function play() { video.play(); }
+function pause() { video.pause(); }
+function seek(t) { if (!video.paused) { video.pause(); } video.currentTime = t; }
+function is_paused() { return ( video.paused ? true : false ); }
+function duration() { return video.duration; }
+function current_time() { return video.currentTime; }
+function setup_player( args ){
+	video = $('#'+args.id).get(0);
+	$(video).on('loadeddata',args.on_load);
+	$(video).on('play',args.on_play);
+	$(video).on('pause ended',args.on_pause);
+	$(video).on('timeupdate',()=>{
+		args.on_timechange();
+		let current_time = video.currentTime;
+		let text = "";
+		for (let i=m_current_vtt;i<vtt_lst.length;i++) {
+			let c = vtt_lst[i];
+			if ( c.startTime > current_time ) { break; }
+			if ( c.endTime >= current_time ) {
+				m_current_vtt = Math.min(m_current_vtt,i);
+				text = ( text.length == 0 ? c.text : text+'\n'+c.text );
+			}
+		}
+		$('#text-subtitle').val(text);
+	});
+	args.on_timechange();
+}
+function load(){
+	$('#input-mp4-file').on('change',function(){
+		if ( this.files.length == 1 ) {
+			var blob = this.files[0];
+			video.src = window.URL.createObjectURL(blob);
+			video_name = blob.name;
+			$('#input-mp4-file').val('');
+		}
+	});
+	$('#input-mp4-file').click();
+}
+</script>
+</body>
+</html>
